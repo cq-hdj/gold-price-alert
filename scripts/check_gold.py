@@ -1,30 +1,71 @@
 #!/usr/bin/env python3
-"""拉取 FreeJK 金价，定时推送到企业微信群机器人。"""
+"""拉取上金所 AU9999 实时金价，定时推送到企业微信群机器人。"""
 
 from __future__ import annotations
 
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-GOLD_API = "https://api.freejk.com/shuju/jinjia/"
+# 东方财富 · 上金所 AU9999 实时行情（与京东积存金等同口径的现货参考价）
+SGE_API = (
+    "https://push2.eastmoney.com/api/qt/stock/get"
+    "?secid=118.AU9999&fields=f43,f44,f45,f46,f57,f58,f60,f170"
+)
+INTL_API = "https://aurumrates.com/api/v1/spot?metals=gold"
 STATE_FILE = Path(os.environ.get("STATE_FILE", ".gold_state.json"))
 TZ = ZoneInfo(os.environ.get("TIMEZONE", "Asia/Shanghai"))
 
 
-def fetch_gold_price() -> dict:
-    req = urllib.request.Request(GOLD_API, headers={"User-Agent": "gold-price-alert/1.0"})
+def _get_json(url: str) -> Any:
+    req = urllib.request.Request(url, headers={"User-Agent": "gold-price-alert/2.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        body = json.loads(resp.read().decode())
-    if body.get("status") != "success":
-        raise RuntimeError(f"API 返回异常: {body}")
-    return body["data"]
+        return json.loads(resp.read().decode())
+
+
+def _cent_to_yuan(value: Any) -> Optional[float]:
+    if value in (None, "-", ""):
+        return None
+    return round(float(value) / 100, 2)
+
+
+def fetch_gold_price() -> Dict[str, Any]:
+    body = _get_json(SGE_API)
+    data = body.get("data") or {}
+    if not data.get("f43"):
+        raise RuntimeError(f"上金所行情返回异常: {body}")
+
+    price = _cent_to_yuan(data["f43"])
+    prev_close = _cent_to_yuan(data.get("f60"))
+    change_pct = round(float(data.get("f170", 0)) / 100, 2) if data.get("f170") is not None else None
+
+    intl_price = None
+    intl_unit = "USD/oz"
+    try:
+        intl = _get_json(INTL_API)
+        gold = (intl.get("data") or {}).get("gold") or {}
+        intl_price = gold.get("price")
+    except (urllib.error.URLError, TimeoutError, ValueError, RuntimeError):
+        pass
+
+    return {
+        "symbol": data.get("f58") or "黄金9999",
+        "code": data.get("f57") or "AU9999",
+        "price": price,
+        "open": _cent_to_yuan(data.get("f46")),
+        "high": _cent_to_yuan(data.get("f44")),
+        "low": _cent_to_yuan(data.get("f45")),
+        "prev_close": prev_close,
+        "change_pct": change_pct,
+        "international_price": intl_price,
+        "international_unit": intl_unit,
+        "source": "东方财富 · 上金所 AU9999",
+    }
 
 
 def load_state() -> dict:
@@ -50,32 +91,35 @@ def format_delta(last_price: Optional[float], price: float) -> Tuple[str, str, s
     return "0.00 元/克 (0.000%)", "comment", "持平"
 
 
-def build_markdown(data: dict, last_price: float | None, check_time: datetime) -> str:
+def build_markdown(data: dict, last_price: Optional[float], check_time: datetime) -> str:
     price = float(data["price"])
     delta_text, color, trend = format_delta(last_price, price)
-    intl_price = data.get("international_price", "—")
-    intl_unit = data.get("international_unit", "USD/oz")
 
-    # 粗算国际金价折合人民币/克（仅参考，按 31.1035 克/盎司）
-    cny_per_gram_hint = ""
-    try:
-        usd_oz = float(intl_price)
-        ref_cny = usd_oz * 7.25 / 31.1035
-        cny_per_gram_hint = f"\n> 国际金价折算约：<font color=\"comment\">{ref_cny:.2f} 元/克</font>（按 7.25 汇率估算，仅供参考）"
-    except (TypeError, ValueError):
-        pass
+    vs_prev = ""
+    if data.get("prev_close") is not None and data.get("change_pct") is not None:
+        chg = float(data["price"]) - float(data["prev_close"])
+        vs_prev = (
+            f"\n> 较昨收：{chg:+.2f} 元/克 ({data['change_pct']:+.2f}%)"
+            f"（昨收 {data['prev_close']:.2f}）"
+        )
+
+    intl_line = ""
+    if data.get("international_price"):
+        intl_line = f"\n> 国际现货（COMEX）：**{data['international_price']} {data['international_unit']}**"
 
     return (
         "## 黄金行情定时播报\n"
-        f"> 品种：**{data.get('symbol', '上海黄金现货')}**\n"
+        f"> 品种：**{data['code']} {data['symbol']}**（上金所现货）\n"
         f"> 现价：<font color=\"{color}\">**{price:.2f} 元/克**</font>\n"
-        f"> 较上次：<font color=\"{color}\">{delta_text}</font>（{trend}）\n"
-        f"> 国际现货：**{intl_price} {intl_unit}**"
-        f"{cny_per_gram_hint}\n"
-        f"> 行情更新时间：{data.get('update_time', '—')}\n"
-        f"> 接口缓存时间：{data.get('timestamp', '—')}\n"
-        f"> 本次检查时间：{check_time.strftime('%Y-%m-%d %H:%M:%S')}（北京时间）\n"
-        f"> 推送频率：每 30 分钟 · 数据源 [FreeJK](https://freejk.com/api/47)"
+        f"> 今开/最高/最低：{data.get('open', '—')} / {data.get('high', '—')} / {data.get('low', '—')} 元/克"
+        f"{vs_prev}\n"
+        f"> 较上次推送：<font color=\"{color}\">{delta_text}</font>（{trend}）"
+        f"{intl_line}\n"
+        f"> 口径说明：与京东积存金、银行积存金同类的 **AU9999 现货参考价**，"
+        f"非品牌金饰零售价（金店通常更高）\n"
+        f"> 数据源：{data.get('source')}\n"
+        f"> 检查时间：{check_time.strftime('%Y-%m-%d %H:%M:%S')}（北京时间）\n"
+        f"> 推送频率：每 30 分钟"
     )
 
 
@@ -113,10 +157,9 @@ def main() -> int:
 
     content = build_markdown(data, last_price, check_time)
     push_wecom(webhook, content)
-    print("已推送企业微信")
+    print(f"已推送企业微信，AU9999 现价 {price:.2f} 元/克")
 
     state["last_price"] = price
-    state["last_api_update"] = data.get("update_time")
     state["last_check_at"] = check_time.isoformat()
     state["last_push_at"] = check_time.isoformat()
     save_state(state)
