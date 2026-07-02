@@ -17,6 +17,6 @@ jobs:
 
       - name: Push daily fortune to WeCom
         env:
-          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK_FORTUNE }}
           TIMEZONE: Asia/Shanghai
         run: python3 scripts/daily_fortune.py
