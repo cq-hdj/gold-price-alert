@@ -2,9 +2,17 @@ name: Gold Price Alert
 
 on:
   schedule:
-    # 每 30 分钟推送一次（UTC）
+    # 每 30 分钟（北京时间，显式指定时区）
     - cron: "0,30 * * * *"
+      timezone: Asia/Shanghai
   workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gold-price-alert
+  cancel-in-progress: false
 
 jobs:
   alert:
