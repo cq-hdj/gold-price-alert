@@ -1,0 +1,22 @@
+name: Daily Fortune
+
+on:
+  schedule:
+    # 北京时间 每天 8:00（UTC 0:00）
+    - cron: "0 0 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  push-fortune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install lunar_python
+
+      - name: Push daily fortune to WeCom
+        env:
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          TIMEZONE: Asia/Shanghai
+        run: python3 scripts/daily_fortune.py
