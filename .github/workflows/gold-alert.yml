@@ -1,0 +1,35 @@
+name: Gold Price Alert
+
+on:
+  schedule:
+    # 每 30 分钟推送一次（UTC）
+    - cron: "0,30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore price state
+        uses: actions/cache@v4
+        with:
+          path: .gold_state.json
+          key: gold-state-${{ github.repository }}
+
+      - name: Fetch gold price and push to WeCom
+        env:
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          STATE_FILE: .gold_state.json
+          TIMEZONE: Asia/Shanghai
+        run: python3 scripts/check_gold.py
+
+      - name: Save price state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gold_state.json
+          key: gold-state-${{ github.repository }}
